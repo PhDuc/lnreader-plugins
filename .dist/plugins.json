@@ -1,0 +1,11 @@
+[
+	{
+		"id": "wtrlab-new",
+		"name": "WTR-LAB-NEW",
+		"site": "https://wtr-lab.com/",
+		"lang": "English",
+		"version": "1.0.1",
+		"url": "https://raw.githubusercontent.com/PhDuc/lnreader-plugins/plugins/v3.0.0/.js/src/plugins/english/wtrlab.js",
+		"iconUrl": "https://raw.githubusercontent.com/PhDuc/lnreader-plugins/plugins/v3.0.0/public/static/src/en/wtrlab/icon.png"
+	}
+]
