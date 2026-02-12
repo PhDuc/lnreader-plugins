@@ -4,8 +4,8 @@ import { FilterTypes, Filters } from '@libs/filterInputs';
 import { load as parseHTML } from 'cheerio';
 
 class WTRLAB implements Plugin.PluginBase {
-  id = 'WTRLAB';
-  name = 'WTR-LAB';
+  id = 'wtrlab-new';
+  name = 'WTR-LAB-NEW';
   site = 'https://wtr-lab.com/';
   version = '1.0.1';
   icon = 'src/en/wtrlab/icon.png';
@@ -126,25 +126,104 @@ class WTRLAB implements Plugin.PluginBase {
   }
 
   async parseChapter(chapterPath: string): Promise<string> {
-    const body = await fetchApi(this.site + chapterPath).then(res =>
-      res.text(),
-    );
+    const TIMEOUT_MS = 5000; // 5 seconds
 
-    const loadedCheerio = parseHTML(body);
-    const chapterJson = loadedCheerio('#__NEXT_DATA__').html() + '';
-    const jsonData: NovelJson = JSON.parse(chapterJson);
+    const fetchWithTimeout = async (url: string, timeoutMs: number) => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        // fetchApi's init typing doesn't include AbortSignal; cast to keep this change local.
+        return await fetchApi(url, { signal: controller.signal } as any);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    };
 
-    const chapterContent = JSON.stringify(
-      jsonData.props.pageProps.serie.chapter_data.data.body,
-    );
-    const parsedArray = JSON.parse(chapterContent);
-    let htmlString = '';
+    const parseChapterContent = (html: string): string | null => {
+      const $ = parseHTML(html);
 
-    for (const text of parsedArray) {
-      htmlString += `<p>${text}</p>`;
+      // 1) Preferred: Next.js payload
+      try {
+        const nextData = $('#__NEXT_DATA__').html();
+        if (nextData) {
+          const jsonData: NovelJson = JSON.parse(nextData);
+          const rawBody: any =
+            jsonData?.props?.pageProps?.serie?.chapter_data?.data?.body;
+
+          let lines: unknown = rawBody;
+          if (typeof rawBody === 'string') {
+            const s = rawBody.trim();
+            // If it looks like JSON, try to parse it; otherwise treat as HTML
+            if (s.startsWith('[') || s.startsWith('{')) {
+              try {
+                lines = JSON.parse(rawBody);
+              } catch (err) {
+                // Malformed JSON: do not return here; fall through to DOM parsing
+                lines = undefined;
+              }
+            } else {
+              // Do not return rawBody; fall through to DOM parsing.
+              lines = undefined;
+            }
+          }
+
+          if (Array.isArray(lines) && lines.length > 0) {
+            return lines.map(t => `<p>${t}</p>`).join('');
+          }
+        }
+      } catch (err) {
+        // Fall back to DOM parsing, but surface the error for diagnostics
+        // eslint-disable-next-line no-console
+        console.warn('parseChapter: Next-data parse failed', err);
+      }
+
+      // 2) Fallback: DOM-rendered chapter body (web/webplus)
+      const domHtml =
+        $('.chapter-body.menu-target').first().html() ||
+        $('.chapter-body').first().html() ||
+        $('[data-chapter-id]').first().html();
+
+      return domHtml || null;
+    };
+
+    // Try webplus first (with timeout)
+    try {
+      const base = new URL(chapterPath, this.site);
+      base.searchParams.set('service', 'webplus');
+      const webplusUrl = base.toString();
+      const res = await fetchWithTimeout(webplusUrl, TIMEOUT_MS);
+      if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${webplusUrl}`);
+      const html = await res.text();
+      const parsed = parseChapterContent(html);
+      if (parsed) return parsed;
+    } catch (err) {
+      // Log the issue but continue to the web fallback
+      // eslint-disable-next-line no-console
+      console.warn('parseChapter: webplus fetch/parse failed', err);
     }
 
-    return htmlString;
+    // Fallback to web
+    try {
+      const base = new URL(chapterPath, this.site);
+      base.searchParams.set('service', 'web');
+      const webUrl = base.toString();
+      const res = await fetchWithTimeout(webUrl, TIMEOUT_MS);
+      if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${webUrl}`);
+      const html = await res.text();
+      const parsed = parseChapterContent(html);
+
+      if (!parsed) {
+        throw new Error(
+          'Failed to parse chapter content from both webplus and web',
+        );
+      }
+
+      return parsed;
+    } catch (err) {
+      throw new Error(
+        `parseChapter: failed to load/parse chapter (${chapterPath}): ${String(err)}`,
+      );
+    }
   }
 
   async searchNovels(searchTerm: string): Promise<Plugin.NovelItem[]> {
